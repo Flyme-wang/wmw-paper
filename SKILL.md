@@ -22,6 +22,7 @@ description: Two-track academic literature workflow. Track A - translate an Engl
 | **渲染后逐页视觉核验** | LibreOffice 转 PDF → 拼图 → **Read 每张拼图** | 统计脚本会漏报排版问题（表格跨页、图被裁切、公式溢出） |
 | **图片裁到紧贴内容** | 图注正上方为图区，去白边后不得混入正文行或编号 `(2.1)` | "截图位置准确"是硬要求，多裁一行正文即视为失败 |
 | **表格整表不跨页** | 每行加 `w:cantSplit`，除末行外全部段落 `keep_with_next=True` | 参数表被截断后上下半段无法对照 |
+| **页脚必须有页码** | 页脚插入 `PAGE` 域（推荐居中「第 X 页 / 共 Y 页」，用 `PAGE` + `NUMPAGES`）；封面可用 `titlePg` 不编号 | 交付的 Word 无页码无法被引用、校对与装订，属交付缺陷 |
 | **引用不译不收录** | 文内 `(Author, Year)` 保留英文原样；文末 References 不放入 Word | 用户固定要求，无需再问 |
 | **下载失败必须留痕** | 403 / token 失效 / 超时的文献转存开放 HTML 全文并写入"待补清单" | 文献整理最怕静默丢失 |
 | **要点卡片必须可回溯** | 每张卡片标注对应 PDF 文件名，结论只写文献里有的内容 | 防止把推断当引用 |
@@ -120,6 +121,48 @@ python <paper>_build.py
 
 版面参数与标题区/摘要/译注/附录模板见 [reference.md](reference.md)。
 
+### A5.1 页脚页码（MANDATORY）
+
+**每份交付的 Word 都必须在页脚显示页码。** python-docx 没有页码 API，直接往页脚 XML 注入 `PAGE` 域：
+
+```python
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+
+
+def add_page_number_footer(doc, prefix="第 ", mid=" 页 / 共 ", suffix=" 页",
+                           size=9, different_first_page=False):
+    """页脚居中「第 X 页 / 共 Y 页」。X=PAGE 域，Y=NUMPAGES 域。"""
+    sec = doc.sections[0]
+    if different_first_page:                 # 封面不编号
+        sec.different_first_page_header_footer = True
+    footer = sec.footer
+    p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    def _field(instr):
+        r = p.add_run()
+        fld = OxmlElement("w:fldSimple")
+        fld.set(qn("w:instr"), instr)        # 注意 instr 两侧要有空格
+        t = OxmlElement("w:t"); t.text = "1"
+        rr = OxmlElement("w:r"); rr.append(t); fld.append(rr)
+        r._element.addnext(fld)              # 插到当前 run 之后
+        return fld
+
+    style_run(p.add_run(prefix), size, color=RGBColor(0x7F, 0x8C, 0x8D))
+    _field(" PAGE ")
+    style_run(p.add_run(mid), size, color=RGBColor(0x7F, 0x8C, 0x8D))
+    _field(" NUMPAGES ")
+    style_run(p.add_run(suffix), size, color=RGBColor(0x7F, 0x8C, 0x8D))
+```
+
+要点：
+
+- 域代码字符串**两侧必须留空格**（`" PAGE "` 而非 `"PAGE"`），否则 Word 不识别
+- 首次打开时域显示的是占位值 `1`，需 `Ctrl+A` → `F9` 更新；LibreOffice 转 PDF 时会自动求值，可用渲染图核对
+- 封面不编号用 `different_first_page_header_footer = True`（等价于 `w:titlePg`），不要靠"删掉第一页页脚"实现
+- **交付前必须确认渲染出的每一页页脚都有号**，且末页显示的「共 Y 页」等于实际页数
+
 ## A6 Verify — 不可跳过
 
 ```bash
@@ -139,6 +182,7 @@ python scripts/verify_render.py "<out.docx>" tmp_render --expect-media 87 --tabl
 - [ ] 每张表完整落在一页（查表名是否只出现在单一页）
 - [ ] 附录各节标题、伪代码行号连续
 - [ ] 无空白页、无重复页
+- [ ] **每一页页脚都有页码**，序号连续、「共 Y 页」等于实际页数
 ```
 
 **拼图对小字号密排文本可能显示为空白** → 判断页面有无内容一律以 `page.get_text()` 为准，不得据拼图误删内容。
@@ -220,6 +264,7 @@ python scripts/verify_render.py "<out.docx>" tmp_render --expect-media 87 --tabl
 | 表格跨页断裂 | 缺 `cantSplit` + `keep_with_next` | 见 A5 `table` |
 | 图与图注分属两页 | 图段未设 `keep_with_next` | `figure()` 中图段设 True |
 | 表格后凭空页 | 表后未加空段 | `build_table()` 末尾追加 4pt 空段 |
+| 交付的 Word 没有页码 | 忘了给页脚注入 PAGE 域 | 见 A5.1；必须逐页在渲染图里确认页脚有号 |
 | PowerShell 输出中文乱码 | 管道 GBK 编码 | 脚本内 `sys.stdout.reconfigure(encoding='utf-8')`，结果写 UTF-8 文件而非管道 |
 | MuPDF `No common ancestor in structure tree` 刷屏 | 结构树警告 | 命令尾加 `2>$null` |
 | 写文件报 `save file failed, reason: unknown` | 工具假报错 | 用 `python -c` 读回确认已写入，**不要重复写** |
